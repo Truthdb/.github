@@ -105,6 +105,7 @@ jobs:
           CARGO_TARGET: ${{ inputs.cargo_target }}
 
       - name: Package artifacts
+        id: package
         shell: bash
         run: |
           set -euo pipefail
@@ -128,6 +129,9 @@ jobs:
 
           echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
           echo "CHECKSUM=${checksum}" >> "$GITHUB_ENV"
+
+          echo "archive=${archive}" >> "$GITHUB_OUTPUT"
+          echo "checksum=${checksum}" >> "$GITHUB_OUTPUT"
         env:
           BINARY_NAME: ${{ inputs.binary_name }}
           CARGO_TARGET: ${{ inputs.cargo_target }}
@@ -156,12 +160,14 @@ jobs:
           EOF
         env:
           BINARY_NAME: ${{ inputs.binary_name }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          CHECKSUM: ${{ steps.package.outputs.checksum }}
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           body_path: release_notes.md
           files: |
-            dist/${{ env.ARCHIVE }}
-            dist/${{ env.CHECKSUM }}
+            dist/${{ steps.package.outputs.archive }}
+            dist/${{ steps.package.outputs.checksum }}
           fail_on_unmatched_files: true

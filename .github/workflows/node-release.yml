@@ -1,0 +1,130 @@
+name: Node Release
+
+on:
+  workflow_call:
+    inputs:
+      project_name:
+        type: string
+        required: true
+      node_version:
+        type: string
+        default: '20'
+      working_directory:
+        type: string
+        default: '.'
+      build_command:
+        type: string
+        default: npm run build
+      dist_dir:
+        type: string
+        default: dist
+      archive_basename:
+        type: string
+        required: true
+      extra_body:
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Generate changelog
+        id: changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          prev_tag=$(git describe --abbrev=0 --tags "$(git rev-list --tags --skip=1 --max-count=1)" 2>/dev/null || true)
+          if [[ -z "$prev_tag" ]]; then
+            changelog="Initial release"
+          else
+            changelog=$(git log "${prev_tag}..HEAD" --pretty=format:"- %s" --no-merges)
+          fi
+
+          echo "CHANGELOG<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$changelog" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working_directory }}
+        run: npm ci
+
+      - name: Build
+        working-directory: ${{ inputs.working_directory }}
+        run: ${{ inputs.build_command }}
+
+      - name: Package artifacts
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-release
+
+          archive="${ARCHIVE_BASENAME}-v${VERSION}.tar.gz"
+          checksum="${ARCHIVE_BASENAME}-v${VERSION}.sha256"
+
+          tar -czf "dist-release/${archive}" -C "${DIST_DIR}" .
+          (cd dist-release && sha256sum "${archive}" > "${checksum}")
+
+          echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
+          echo "CHECKSUM=${checksum}" >> "$GITHUB_ENV"
+        env:
+          DIST_DIR: ${{ inputs.dist_dir }}
+          ARCHIVE_BASENAME: ${{ inputs.archive_basename }}
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          extra_body='${{ inputs.extra_body }}'
+          extra_body="${extra_body//\$VERSION/$VERSION}"
+          extra_body="${extra_body//\$TAG/$TAG}"
+
+          cat > release_notes.md <<EOF
+          ## ${PROJECT_NAME} ${VERSION}
+
+          ### Changes
+          ${{ steps.changelog.outputs.CHANGELOG }}
+
+          ${extra_body}
+
+          ### Assets
+
+          - ${ARCHIVE}
+          - ${CHECKSUM}
+          EOF
+        env:
+          PROJECT_NAME: ${{ inputs.project_name }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release_notes.md
+          files: |
+            ${{ inputs.working_directory }}/dist-release/${{ env.ARCHIVE }}
+            ${{ inputs.working_directory }}/dist-release/${{ env.CHECKSUM }}
+          fail_on_unmatched_files: true

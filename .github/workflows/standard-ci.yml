@@ -1,0 +1,65 @@
+name: Standard CI
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        type: string
+        default: ubuntu-latest
+      working_directory:
+        type: string
+        default: .
+      install_packages:
+        type: string
+        default: ""
+      script:
+        type: string
+        required: true
+      artifact_name:
+        type: string
+        default: ""
+      artifact_path:
+        type: string
+        default: ""
+      artifact_if_no_files:
+        type: string
+        default: error
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: Run
+    runs-on: ${{ inputs.runs_on }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        if: ${{ inputs.install_packages != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # shellcheck disable=SC2086
+          sudo apt-get install -y ${INSTALL_PACKAGES}
+        env:
+          INSTALL_PACKAGES: ${{ inputs.install_packages }}
+
+      - name: Run script
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+          ${SCRIPT}
+        env:
+          SCRIPT: ${{ inputs.script }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifact
+        if: ${{ inputs.artifact_name != '' && inputs.artifact_path != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.artifact_path }}
+          if-no-files-found: ${{ inputs.artifact_if_no_files }}

@@ -1,0 +1,90 @@
+name: Docker Image CI
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile:
+        type: string
+        default: docker/Dockerfile
+      context:
+        type: string
+        default: .
+      image_repo:
+        type: string
+        required: true
+      hadolint_ignore:
+        type: string
+        default: DL3008
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ inputs.dockerfile }}
+          ignore: ${{ inputs.hadolint_ignore }}
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          push: false
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          push: false
+          tags: ${{ inputs.image_repo }}:${{ github.sha }}
+
+      - name: Write build metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          {
+            echo "repo=${GITHUB_REPOSITORY}";
+            echo "sha=${GITHUB_SHA}";
+            echo "ref=${GITHUB_REF}";
+            echo "tag=${GITHUB_REF_NAME}";
+            echo "image=${IMAGE_REPO}:${GITHUB_SHA}";
+            echo "digest=${{ steps.build.outputs.digest }}";
+          } > dist/image.txt
+        env:
+          IMAGE_REPO: ${{ inputs.image_repo }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-metadata
+          path: dist/image.txt
+          if-no-files-found: error

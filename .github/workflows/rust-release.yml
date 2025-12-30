@@ -1,0 +1,167 @@
+name: Rust Release
+
+on:
+  workflow_call:
+    inputs:
+      binary_name:
+        type: string
+        required: true
+      rust_container_image:
+        type: string
+        default: rust:1.92-bookworm
+      install_packages:
+        type: string
+        default: ""
+      cargo_build_args:
+        type: string
+        default: ""
+      cargo_target:
+        type: string
+        default: ""
+      artifact_target_name:
+        type: string
+        default: x86_64-linux-gnu
+      extra_body:
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_HOME: ${{ github.workspace }}/.cargo
+  RUST_BACKTRACE: 1
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ inputs.rust_container_image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Install system packages
+        if: ${{ inputs.install_packages != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          # shellcheck disable=SC2086
+          apt-get install -y ${INSTALL_PACKAGES}
+        env:
+          INSTALL_PACKAGES: ${{ inputs.install_packages }}
+
+      - name: Add Rust target
+        if: ${{ inputs.cargo_target != '' }}
+        shell: bash
+        run: rustup target add "${CARGO_TARGET}"
+        env:
+          CARGO_TARGET: ${{ inputs.cargo_target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Generate changelog
+        id: changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          prev_tag=$(git describe --abbrev=0 --tags "$(git rev-list --tags --skip=1 --max-count=1)" 2>/dev/null || true)
+          if [[ -z "$prev_tag" ]]; then
+            changelog="Initial release"
+          else
+            changelog=$(git log "${prev_tag}..HEAD" --pretty=format:"- %s" --no-merges)
+          fi
+
+          echo "CHANGELOG<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$changelog" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_args=()
+          if [[ -n "${CARGO_TARGET}" ]]; then
+            target_args+=(--target "${CARGO_TARGET}")
+          fi
+
+          # shellcheck disable=SC2086
+          cargo build --release ${CARGO_BUILD_ARGS} "${target_args[@]}"
+        env:
+          CARGO_BUILD_ARGS: ${{ inputs.cargo_build_args }}
+          CARGO_TARGET: ${{ inputs.cargo_target }}
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="${BINARY_NAME}"
+
+          if [[ -n "${CARGO_TARGET}" ]]; then
+            bin_path="target/${CARGO_TARGET}/release/${bin}"
+          else
+            bin_path="target/release/${bin}"
+          fi
+
+          test -x "$bin_path"
+
+          mkdir -p dist
+
+          archive="${bin}-v${VERSION}-${ARTIFACT_TARGET_NAME}.tar.gz"
+          checksum="${bin}-v${VERSION}-${ARTIFACT_TARGET_NAME}.sha256"
+
+          tar -czf "dist/${archive}" -C "$(dirname "$bin_path")" "$bin"
+          sha256sum "$bin_path" > "dist/${checksum}"
+
+          echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
+          echo "CHECKSUM=${checksum}" >> "$GITHUB_ENV"
+        env:
+          BINARY_NAME: ${{ inputs.binary_name }}
+          CARGO_TARGET: ${{ inputs.cargo_target }}
+          ARTIFACT_TARGET_NAME: ${{ inputs.artifact_target_name }}
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          extra_body='${{ inputs.extra_body }}'
+          extra_body="${extra_body//\$VERSION/$VERSION}"
+          extra_body="${extra_body//\$TAG/$TAG}"
+
+          cat > release_notes.md <<EOF
+          ## ${BINARY_NAME} ${VERSION}
+
+          ### Changes
+          ${{ steps.changelog.outputs.CHANGELOG }}
+
+          ${extra_body}
+
+          ### Assets
+
+          - ${ARCHIVE}
+          - ${CHECKSUM}
+          EOF
+        env:
+          BINARY_NAME: ${{ inputs.binary_name }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release_notes.md
+          files: |
+            dist/${{ env.ARCHIVE }}
+            dist/${{ env.CHECKSUM }}
+          fail_on_unmatched_files: true

@@ -1,0 +1,66 @@
+name: Node CI
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        type: string
+        default: '20'
+      working_directory:
+        type: string
+        default: '.'
+      install_command:
+        type: string
+        default: npm ci
+      lint_command:
+        type: string
+        default: npm run lint
+      build_command:
+        type: string
+        default: npm run build
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working_directory }}
+        run: ${{ inputs.install_command }}
+
+      - name: Lint
+        working-directory: ${{ inputs.working_directory }}
+        run: ${{ inputs.lint_command }}
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working_directory }}
+        run: ${{ inputs.install_command }}
+
+      - name: Build
+        working-directory: ${{ inputs.working_directory }}
+        run: ${{ inputs.build_command }}

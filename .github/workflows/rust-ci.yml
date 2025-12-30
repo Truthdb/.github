@@ -1,0 +1,166 @@
+name: Rust CI
+
+on:
+  workflow_call:
+    inputs:
+      rust_container_image:
+        type: string
+        default: rust:1.92-bookworm
+      install_packages:
+        type: string
+        default: ""
+      rustup_targets:
+        type: string
+        default: ""
+      cargo_fmt_command:
+        type: string
+        default: cargo fmt -- --check
+      cargo_clippy_command:
+        type: string
+        default: cargo clippy --all-targets --all-features -- -D warnings
+      cargo_test_command:
+        type: string
+        default: cargo test
+      cargo_build_command:
+        type: string
+        default: cargo build --release
+      artifact_name:
+        type: string
+        default: ""
+      artifact_path:
+        type: string
+        default: ""
+      artifact_if_no_files:
+        type: string
+        default: error
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_HOME: ${{ github.workspace }}/.cargo
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ inputs.rust_container_image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        if: ${{ inputs.install_packages != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          # shellcheck disable=SC2086
+          apt-get install -y ${INSTALL_PACKAGES}
+        env:
+          INSTALL_PACKAGES: ${{ inputs.install_packages }}
+
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
+
+      - name: Add Rust targets
+        if: ${{ inputs.rustup_targets != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r target; do
+            [[ -z "$target" ]] && continue
+            rustup target add "$target"
+          done <<< "$RUSTUP_TARGETS"
+        env:
+          RUSTUP_TARGETS: ${{ inputs.rustup_targets }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: ${{ inputs.cargo_fmt_command }}
+
+      - name: Run clippy
+        run: ${{ inputs.cargo_clippy_command }}
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ inputs.rust_container_image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        if: ${{ inputs.install_packages != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          # shellcheck disable=SC2086
+          apt-get install -y ${INSTALL_PACKAGES}
+        env:
+          INSTALL_PACKAGES: ${{ inputs.install_packages }}
+
+      - name: Add Rust targets
+        if: ${{ inputs.rustup_targets != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r target; do
+            [[ -z "$target" ]] && continue
+            rustup target add "$target"
+          done <<< "$RUSTUP_TARGETS"
+        env:
+          RUSTUP_TARGETS: ${{ inputs.rustup_targets }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: ${{ inputs.cargo_test_command }}
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ inputs.rust_container_image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        if: ${{ inputs.install_packages != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          # shellcheck disable=SC2086
+          apt-get install -y ${INSTALL_PACKAGES}
+        env:
+          INSTALL_PACKAGES: ${{ inputs.install_packages }}
+
+      - name: Add Rust targets
+        if: ${{ inputs.rustup_targets != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r target; do
+            [[ -z "$target" ]] && continue
+            rustup target add "$target"
+          done <<< "$RUSTUP_TARGETS"
+        env:
+          RUSTUP_TARGETS: ${{ inputs.rustup_targets }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: ${{ inputs.cargo_build_command }}
+
+      - name: Upload artifact
+        if: ${{ inputs.artifact_name != '' && inputs.artifact_path != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.artifact_path }}
+          if-no-files-found: ${{ inputs.artifact_if_no_files }}

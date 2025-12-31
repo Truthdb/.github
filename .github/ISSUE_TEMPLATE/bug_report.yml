@@ -1,0 +1,56 @@
+name: Bug report
+description: Report something that is broken
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Thanks for taking the time to report a bug."
+  - type: input
+    id: repo
+    attributes:
+      label: Repository
+      description: Which repo is affected? (truthdb / installer / orchestrator / website / etc.)
+      placeholder: truthdb
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you observe?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to reproduce the issue.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Paste relevant logs (remove secrets).
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, versions, and anything relevant.
+      placeholder: macOS 14, rustc 1.xx, node 20.x
+    validations:
+      required: false

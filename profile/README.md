@@ -4,12 +4,12 @@ TruthDB is a collection of open source components for building and operating Tru
 
 ### Repositories
 
-- `truthdb`: core libraries and CLI
+- `truthdb`: Linux service providing database / streaming / event sourcing functionality
 - `installer`: installer UI/application
 - `installer-iso`: ISO build scripts/assets
 - `installer-kernel`: kernel config/initramfs for the installer
 - `installer-kernel-builder-image`: container image for building the installer kernel
-- `orchestrator`: orchestration tooling
+- `orchestrator`: developer/admin CLI for operating TruthDB (including releases)
 - `website`: public website
 
 ### Contributing

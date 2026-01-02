@@ -18,6 +18,7 @@ Explicit networking policy:
 - **Installer environment**: the initramfs userspace launched by the ISO (BusyBox + `truthdb-installer`).
 - **Target disk**: the block device selected for installation (e.g., `/dev/vda`, `/dev/sda`, `/dev/nvme0n1`).
 - **ESP**: EFI System Partition mounted at `/boot/efi` in the installed system.
+- **Debian payload (rootfs payload)**: a prebuilt, compressed archive of a minimal Debian filesystem tree (e.g., a `tar.zst`) that the installer extracts onto the target root partition so it can install Debian **without** networking.
 
 ## Non-Goals (initially)
 - Disk selection UI.
@@ -115,8 +116,10 @@ Mount points in installer environment:
 - `/mnt/boot/efi` → ESP
 
 ## Offline Debian Payload
+This is the “offline Debian installer” approach: we ship a complete minimal Debian root filesystem as a single archive and extract it onto the target disk.
+
 ### Artifact
-- `debian-minbase-amd64-bookworm.tar.zst`
+- Example name: `debian-minbase-amd64-bookworm.tar.zst`
 
 ### Contents
 A bootable minimal Debian system containing:
@@ -126,6 +129,7 @@ A bootable minimal Debian system containing:
 - `e2fsprogs`
 - `util-linux`
 - `iproute2`
+- `passwd` (for `chpasswd`)
 
 Notes:
 - Firmware packages are excluded initially.
@@ -137,6 +141,7 @@ In the ISO build pipeline:
 2. Configure minimal system files.
 3. Install required packages into the staging rootfs.
    - Ensure the Debian kernel and initramfs are present under `/boot` (e.g., by installing `linux-image-amd64` and running `update-initramfs` in the chroot during image build).
+   - Set a known root password for the MVP (see “Root credentials”).
 4. Clean apt caches.
 5. Pack as a tarball with numeric ownership.
 
@@ -180,6 +185,13 @@ Enable required services in the target:
 
 Configure `/etc/resolv.conf` to use systemd-resolved stub.
 
+## Root Credentials (MVP)
+Set the root password of the installed Debian system to `123456`.
+
+Notes:
+- This is insecure and intended only for early bring-up.
+- Follow-up work should replace this with a safer approach (first-boot password change, SSH keys, or provisioning).
+
 ## Installer Runtime Dependencies
 The initramfs environment must include:
 - Partitioning tool: `sfdisk` or `parted`
@@ -194,6 +206,11 @@ Installer must:
 - Abort if any command fails; print the failing step.
 - Leave clear logs on console for post-mortem.
 
+## Installer UX / Output Requirements
+- The installer UI output starts at the top-left of the screen.
+- The installer prints **exactly one line per step** as it progresses (e.g., "[OK] Partition disk", "[..] Extract Debian payload", "[ERR] bootctl install").
+- Avoid centered “welcome” text that blocks/logically interrupts the step log.
+
 ## Verification Plan
 - Boot ISO in UTM:
   - Confirm disk enumeration output.
@@ -205,10 +222,92 @@ Installer must:
   - Confirm ESP creation.
   - Confirm boot entry works.
 
+## Installer Execution Sequence (MVP)
+The installer should run the following steps in order and abort on the first failure:
+
+1. **Enumerate disks** and print a table of candidates + the chosen target disk.
+   - If more than one eligible disk exists, abort.
+2. **Safety checks** on the chosen target:
+    - Confirm it is not currently mounted (no mounted children).
+    - Confirm it meets minimum size threshold.
+    - Confirm it is writable and non-removable (per current safety filters).
+3. **Wipe signatures** (recommended): `wipefs -a <disk>`.
+4. **Partition** the disk as GPT with:
+    - ESP 512 MiB
+    - Root = remainder
+5. **Re-read partition table** (e.g., `partprobe` or a short udev settle, depending on available tooling).
+6. **Format**:
+    - `mkfs.vfat -F 32 <esp>`
+    - `mkfs.ext4 -F <root>`
+7. **Mount**:
+    - Root → `/mnt`
+    - ESP → `/mnt/boot/efi`
+8. **Install Debian payload** by extracting into `/mnt`.
+9. **Set root password** in the target.
+   - Example (inside installer environment):
+     - `chroot /mnt /bin/sh -lc 'echo "root:123456" | chpasswd'`
+9. **Write `/etc/fstab`** in the target using UUIDs.
+10. **Configure bootloader** in the target:
+      - `chroot /mnt bootctl install`
+      - Write loader config and entry that reference the installed kernel/initramfs and `root=UUID=<root-uuid>`.
+11. **Configure first-boot DHCP** (systemd-networkd) in the target and enable services.
+12. **Sync + unmount** all mounts.
+13. **Reboot**.
+
+## Work Breakdown (per repo)
+This is the concrete engineering work implied by the spec.
+
+### `installer/` (Rust)
+- Disk enumeration via `/sys/block` + safety filters (existing mounted checks included).
+   - Abort if more than one eligible disk exists (MVP safety gate).
+- Partitioning implementation (choose one):
+   - `sfdisk` scripted GPT layout, or
+   - `parted` non-interactive.
+- Filesystem formatting wrappers and mount orchestration.
+- Payload discovery + extraction (see “Payload placement” below).
+- Root password set (MVP) via chroot (e.g., `chpasswd`).
+- Target configuration writes:
+   - `/etc/fstab` using UUIDs
+   - systemd-boot loader files
+   - systemd-networkd DHCP config + `systemctl enable ...` in chroot
+- Error handling:
+   - one clear “step name” per stage
+   - propagate stderr to console
+   - fail closed on any ambiguity (e.g., no eligible disks)
+
+### `installer-kernel/`
+- Ensure initramfs contains the required binaries and their runtime deps:
+   - partitioning: `sfdisk` or `parted` (+ `partprobe` if used)
+   - filesystems: `mkfs.vfat`, `mkfs.ext4`
+   - mount utils: `mount`, `umount`
+   - payload: `tar` with zstd support (or `tar` + `zstd`)
+   - optional: `wipefs`
+- Confirm the initramfs does **not** start any DHCP client or otherwise bring up networking.
+
+### `installer-iso/`
+- Extend the ISO build so the Debian rootfs payload artifact is embedded into the initramfs and available at runtime at a stable path (recommend: `/payload/debian-rootfs.tar.zst`).
+- Keep release build coupling between kernel + installer + payload (same version/revision).
+
+## Payload Placement
+For MVP, the payload lives **inside initramfs**.
+
+- Payload is available at a fixed path (recommend: `/payload/debian-rootfs.tar.zst`).
+- The installer reads from that path and extracts to `/mnt`.
+- No need to mount the ISO filesystem at runtime.
+
+Follow-up option (not MVP): store the payload as a file on the ISO and mount `/dev/sr0` read-only to access it.
+
+## Safety Gates (recommended)
+Because this is destructive, the MVP safety gate is:
+- Abort if more than one eligible disk is present.
+
+Follow-up options (not required for MVP):
+- Require a kernel cmdline flag (e.g., `truthdb.install=1`) before doing any writes.
+- Require explicit target disk override (e.g., `truthdb.disk=/dev/sda`) and refuse auto-pick.
+
 ## Open Questions
 - Target Debian suite and kernel strategy:
   - `bookworm` pinned, or track `stable`?
-- Root credentials:
-  - preset root password, create default user, or require later provisioning?
 - Disk selection safety:
   - require an explicit kernel cmdline flag to allow destructive install?
+

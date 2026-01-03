@@ -135,6 +135,18 @@ Notes:
 - Firmware packages are excluded initially.
 - No network packages are required for first boot DHCP if using systemd-networkd (see below).
 
+### TruthDB payload contents (MVP)
+The Debian payload must also include the TruthDB runtime artifacts so the installer can simply enable the service.
+
+- TruthDB binary at a stable path:
+   - Recommend: `/usr/local/bin/truthdb`
+- systemd unit shipped in the payload:
+   - Recommend: `/lib/systemd/system/truthdb.service`
+   - The unit should include `Wants=network-online.target` and `After=network-online.target`.
+- Optional but recommended (can be deferred if TruthDB defaults are acceptable):
+   - Config directory: `/etc/truthdb/`
+   - Data directory: `/var/lib/truthdb/`
+
 ### Build-time generation (CI)
 In the ISO build pipeline:
 1. Run debootstrap to a staging directory.
@@ -181,6 +193,7 @@ Create `/mnt/etc/systemd/network/20-dhcp.network`:
 
 Enable required services in the target:
 - `systemd-networkd.service`
+- `systemd-networkd-wait-online.service` (so `network-online.target` behaves as expected)
 - `systemd-resolved.service`
 
 Configure `/etc/resolv.conf` to use systemd-resolved stub.
@@ -246,13 +259,52 @@ The installer should run the following steps in order and abort on the first fai
 9. **Set root password** in the target.
    - Example (inside installer environment):
      - `chroot /mnt /bin/sh -lc 'echo "root:123456" | chpasswd'`
-9. **Write `/etc/fstab`** in the target using UUIDs.
-10. **Configure bootloader** in the target:
+10. **Write `/etc/fstab`** in the target using UUIDs.
+11. **Configure bootloader** in the target:
       - `chroot /mnt bootctl install`
       - Write loader config and entry that reference the installed kernel/initramfs and `root=UUID=<root-uuid>`.
-11. **Configure first-boot DHCP** (systemd-networkd) in the target and enable services.
-12. **Sync + unmount** all mounts.
-13. **Reboot**.
+12. **Configure first-boot DHCP** (systemd-networkd) in the target and enable services.
+13. **Install + enable TruthDB systemd service** in the target.
+   - The unit file must already exist in the target (shipped in the Debian payload).
+      - Enable it so it starts automatically after boot:
+         - `chroot /mnt /bin/sh -lc 'systemctl enable truthdb.service'`
+14. **Sync + unmount** all mounts.
+15. **Reboot**.
+
+## TruthDB Service (systemd)
+The installed Debian system must start TruthDB automatically on boot via systemd.
+
+### Requirements (MVP)
+- A systemd unit named `truthdb.service` exists on the target after install (shipped in the Debian payload).
+   - Recommend location: `/lib/systemd/system/truthdb.service`
+- The installer enables the service in the target via chroot:
+   - `chroot /mnt /bin/sh -lc 'systemctl enable truthdb.service'`
+- TruthDB requires network; the unit must order itself accordingly.
+   - Required: `Wants=network-online.target` and `After=network-online.target`.
+   - Ensure the installed system provides `network-online.target` for DHCP (e.g., via systemd-networkd + wait-online).
+
+### Example unit file (MVP)
+This is a minimal example of what should be shipped in the Debian payload as `/lib/systemd/system/truthdb.service`:
+
+```ini
+[Unit]
+Description=TruthDB
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/truthdb
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Acceptance Criteria
+- After first boot, `systemctl is-enabled truthdb.service` returns `enabled`.
+- After first boot, `systemctl is-active truthdb.service` returns `active` (or it must have clear logs explaining failure).
 
 ## Work Breakdown (per repo)
 This is the concrete engineering work implied by the spec.
@@ -270,6 +322,7 @@ This is the concrete engineering work implied by the spec.
    - `/etc/fstab` using UUIDs
    - systemd-boot loader files
    - systemd-networkd DHCP config + `systemctl enable ...` in chroot
+   - TruthDB systemd service enablement: `systemctl enable truthdb.service` in chroot
 - Error handling:
    - one clear “step name” per stage
    - propagate stderr to console
@@ -287,6 +340,7 @@ This is the concrete engineering work implied by the spec.
 ### `installer-iso/`
 - Extend the ISO build so the Debian rootfs payload artifact is embedded into the initramfs and available at runtime at a stable path (recommend: `/payload/debian-rootfs.tar.zst`).
 - Keep release build coupling between kernel + installer + payload (same version/revision).
+- Release workflow should pull the matching TruthDB version (binary + `truthdb.service` unit) from the TruthDB repo and include it in the Debian payload.
 
 ## Payload Placement
 For MVP, the payload lives **inside initramfs**.

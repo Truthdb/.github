@@ -2,6 +2,10 @@
 
 TruthDB is a collection of open source components for building and operating TruthDB.
 
+### Start here
+
+- Org overview and repo map: `specs/TRUTHDB-START-HERE.md`
+
 ### Repositories
 
 - `truthdb`: Linux service providing database / streaming / event sourcing functionality

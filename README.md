@@ -2,6 +2,10 @@
 
 This repository contains shared GitHub configuration for the TruthDB organization.
 
+## Start here (org overview)
+
+If you need the cross-repo architecture and release/build map, see `specs/TRUTHDB-START-HERE.md`.
+
 ## What belongs here
 
 - Shared GitHub Actions workflows (reusable workflows, composite actions)

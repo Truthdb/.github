@@ -6,16 +6,16 @@ If you only read one doc to get productive quickly, read this first.
 
 ## Repos at a glance
 
-| Repo | Purpose | Primary outputs |
-|---|---|---|
-| `truthdb/` | Main TruthDB service (Tokio app) + systemd unit | `truthdb` binary + `truthdb.service` release asset |
-| `installer/` | Initramfs installer app (Rust, framebuffer UI, disk partition/install) | `truthdb-installer` (x86_64 musl) release asset |
-| `installer-kernel/` | Linux kernel config used for the installer boot environment | `BOOTX64.EFI` (kernel bzImage built with EFI stub) release asset |
-| `installer-kernel-builder-image/` | Container image used to build the installer kernel reproducibly in CI | GHCR image `ghcr.io/truthdb/truthdb-installer-kernel-builder-image:*` |
-| `installer-iso/` | Produces the bootable installer ISO and embeds an offline Debian payload | `truthdb-installer-vX.Y.Z.iso` release asset |
-| `orchestrator/` | Admin/developer CLI for TruthDB org (currently skeleton) | `orchestrator` release asset |
-| `website/` | Public website (Vue + Vite) | `dist/` tarball release asset |
-| `.github/` | Org-level GitHub configuration and shared docs/specs | Community health docs + specs |
+| Repo                              | Purpose                                                                                 | Primary outputs                                                       |
+| --------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `truthdb/`                        | Main TruthDB service (Tokio app) + systemd unit                                         | `truthdb` binary + `truthdb.service` release asset                    |
+| `installer/`                      | Initramfs installer app (Rust, console-only installer that partitions/formats/installs) | `truthdb-installer` (x86_64 musl) release asset                       |
+| `installer-kernel/`               | Linux kernel config used for the installer boot environment                             | `BOOTX64.EFI` (kernel bzImage built with EFI stub) release asset      |
+| `installer-kernel-builder-image/` | Container image used to build the installer kernel reproducibly in CI                   | GHCR image `ghcr.io/truthdb/truthdb-installer-kernel-builder-image:*` |
+| `installer-iso/`                  | Produces the bootable installer ISO and embeds an offline Debian payload                | `truthdb-installer-vX.Y.Z.iso` release asset                          |
+| `orchestrator/`                   | Admin/developer CLI for TruthDB org (automates tagging + waits for release assets)      | `orchestrator` release asset                                          |
+| `website/`                        | Public website (Vue + Vite)                                                             | `dist/` tarball release asset                                         |
+| `.github/`                        | Org-level GitHub configuration and shared docs/specs                                    | Community health docs + specs                                         |
 
 ## How the installer ISO actually boots and installs
 
@@ -36,6 +36,10 @@ If you only read one doc to get productive quickly, read this first.
    - configures hostname/users/networking
    - installs and configures `systemd-boot`
    - reboots
+
+### Installer UX note (current)
+
+The current `truthdb-installer` implementation is **console-only** and includes a confirmation prompt before destructive steps. The long-term goal is an unattended install, but today you should expect at least one `Press ENTER to continue` prompt.
 
 ### Offline Debian payload
 
@@ -111,9 +115,10 @@ Key file: `.github/workflows/release.yml`
 
 The installer app is designed to run in a minimal initramfs environment.
 
-- UI: tries framebuffer `/dev/fb0` first, falls back to ANSI console output.
-- Input: tries evdev (`/dev/input/event*`) with a fallback path.
+- UI/input: currently console-only with blocking stdin prompts.
 - Disk safety policy: refuses to choose automatically if more than one eligible disk exists.
+
+The installer executes external tools directly (no shell), so the initramfs must include all required programs and (if dynamically linked) their shared libraries. The `installer-iso` **release workflow** assembles the initramfs and is the authoritative place to verify tooling.
 
 Key code:
 - `installer/src/main.rs`

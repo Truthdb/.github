@@ -3,13 +3,23 @@
 > Note: This lives in the org `.github` repo by request, but this repo’s README indicates product/architecture docs usually belong in the relevant product repository (e.g., `installer/` or `installer-iso/`). If we want to align with that, we can relocate this spec later.
 
 ## Goal
-Build a TruthDB installer ISO that, when booted on a UEFI machine, automatically installs a minimal Debian system onto the first eligible disk and reboots into that Debian system.
+Build a TruthDB installer ISO that, when booted on a UEFI machine, installs a minimal Debian system onto an eligible disk and reboots into that Debian system.
 
 Constraints:
 - UEFI-only (no legacy BIOS support).
 - No network is required during installation.
 - After Debian boots, the installed system should obtain an IP via DHCP automatically.
-- Installation is unattended (no prompts) in the first iteration.
+- Installation is currently **semi-attended**: the installer asks for confirmation (press ENTER) before destructive steps.
+
+## Current Implementation Status (Reality Check)
+
+The current `truthdb-installer` implementation largely follows this spec’s install sequence, but there are a few important differences:
+
+- **Not fully unattended yet**: the installer currently prompts for confirmation (press ENTER) before destructive steps.
+- **Disk selection is stricter than “pick the first”**: it refuses to proceed if *more than one* eligible disk is found (safety gate).
+- **Bootloader install uses file copy**: systemd-boot is installed by copying the EFI binary into the ESP (and writing loader entries), not by running `bootctl install` in the target.
+- **Kernel cmdline differs**: the current loader entry uses `rw` and explicitly sets `init=/lib/systemd/systemd`.
+- **Credentials are MVP defaults**: the installer currently sets both the `truthdb` user and `root` to a hardcoded password (`123456`).
 
 Explicit networking policy:
 - The installer environment must not attempt to bring up networking (no DHCP, no downloads).
@@ -28,13 +38,16 @@ Explicit networking policy:
 
 ## End State (Acceptance Criteria)
 After booting the ISO:
-1. Installer prints the disks it detected and the chosen target disk.
+1. Installer prints the chosen target disk.
+   - If no eligible disk exists, it fails with a clear error.
+   - If more than one eligible disk exists, it refuses to choose automatically (fails with a clear error).
 2. Installer partitions and formats the target disk:
    - GPT partition table.
    - Partition 1: ESP (FAT32), 512 MiB.
    - Partition 2: Debian root (EXT4), remainder.
 3. Installer installs an offline minimal Debian root filesystem to the root partition.
 4. Installer sets up UEFI boot with `systemd-boot` so the machine boots from the target disk without the ISO.
+   - Current method: copy the systemd-boot EFI binary into the ESP and write loader entries.
 5. On first boot of the installed Debian system:
    - The system reaches `multi-user.target`.
    - An Ethernet interface uses DHCP automatically.
@@ -51,11 +64,13 @@ This work spans multiple repos:
    - Add logic to detect disks, partition, format, mount, extract rootfs payload, configure boot.
 
 2. **installer-iso**
-   - Update ISO build workflow to embed the Debian rootfs payload artifact into the initramfs.
-   - Ensure release builds use version-matched kernel+installer (already being enforced).
+   - Build the Debian rootfs payload (CI) and embed it into the initramfs at `/payload/debian-minbase-amd64-bookworm.tar.zst`.
+   - Copy required external tools into initramfs (partitioning, formatting, mount, tar/zstd, chroot, efibootmgr, systemd-boot EFI bits).
+   - Enforce version-matched inputs across repos for releases.
 
 3. **installer-kernel**
-   - Ensure kernel/initramfs includes the necessary tooling for partitioning, formatting, mounting, and extraction.
+   - Provide the kernel artifact used by the ISO build (`BOOTX64.EFI`).
+   - (Tooling and payload assembly are handled by `installer-iso`.)
 
 ## Disk Detection and Selection
 ### Detection source
@@ -76,14 +91,17 @@ Exclude disks that are:
 - smaller than a minimum size threshold (recommend: 8 GiB)
 
 ### Ordering
-Sort candidate disks lexicographically by kernel name and choose the first.
+MVP safety policy (current):
+
+- enumerate and log all eligible disks
+- if exactly one eligible disk exists, select it
+- if more than one eligible disk exists, abort (refuse to choose automatically)
 
 ### Logging
-Print for each disk:
-- `/dev/<name>`
-- size in GiB
-- `removable`, `ro`
-- model/vendor when available
+Current implementation logs the overall phase plus either:
+
+- a single selected target disk line, or
+- an error explaining why selection failed (no eligible disks, or multiple eligible disks).
 
 ## Partitioning Scheme (UEFI)
 Target: GPT with 2 partitions.
@@ -166,17 +184,16 @@ In the ISO build pipeline:
 UEFI-only with minimal moving parts.
 
 ### Steps (installed system)
-Within `chroot /mnt`:
-1. Install systemd-boot into the ESP:
-   - `bootctl install`
-2. Create loader config:
-   - `/boot/loader/loader.conf`
-3. Create a boot entry:
-   - `/boot/loader/entries/debian.conf`
+Current implementation:
+
+- The installer copies the systemd-boot EFI binary into the ESP (both the fallback path and the systemd path), then writes the loader config and a single entry.
+- It optionally attempts to create an NVRAM entry via `efibootmgr` (best-effort).
 
 ### Boot entry contents
-- Use `root=UUID=<root-uuid> ro`.
-- Point to the installed Debian kernel and initramfs paths under `/boot`.
+Current implementation uses:
+
+- `options root=UUID=<root-uuid> rw init=/lib/systemd/systemd`
+- kernel/initrd copied into the ESP (e.g. `/EFI/debian/vmlinuz` and `/EFI/debian/initrd.img`)
 
 ## fstab
 Write `/mnt/etc/fstab` entries using UUIDs:
@@ -201,6 +218,8 @@ Configure `/etc/resolv.conf` to use systemd-resolved stub.
 ## Root Credentials (MVP)
 Set the root password of the installed Debian system to `123456`.
 
+Current implementation also creates a `truthdb` user and sets its password to the same value.
+
 Notes:
 - This is insecure and intended only for early bring-up.
 - Follow-up work should replace this with a safer approach (first-boot password change, SSH keys, or provisioning).
@@ -213,6 +232,8 @@ The initramfs environment must include:
 - Extraction tooling: `tar` with zstd support (or separate `zstd` + tar)
 - `wipefs` (optional)
 
+Note: `installer-iso` release workflow is the authoritative place that assembles these tools into initramfs.
+
 ## Error Handling Requirements
 Installer must:
 - Abort if target disk appears mounted.
@@ -220,9 +241,12 @@ Installer must:
 - Leave clear logs on console for post-mortem.
 
 ## Installer UX / Output Requirements
-- The installer UI output starts at the top-left of the screen.
-- The installer prints **exactly one line per step** as it progresses (e.g., "[OK] Partition disk", "[..] Extract Debian payload", "[ERR] bootctl install").
-- Avoid centered “welcome” text that blocks/logically interrupts the step log.
+The current installer is console-only and prints step-prefixed logs to stdout.
+
+Notes:
+
+- It does not currently print a full table of all candidate disks.
+- It prints multiple lines for some phases (e.g., partition device paths).
 
 ## Verification Plan
 - Boot ISO in UTM:
@@ -238,38 +262,41 @@ Installer must:
 ## Installer Execution Sequence (MVP)
 The installer should run the following steps in order and abort on the first failure:
 
-1. **Enumerate disks** and print a table of candidates + the chosen target disk.
-   - If more than one eligible disk exists, abort.
-2. **Safety checks** on the chosen target:
+1. **Enumerate disks** and decide on a target disk.
+   - If no eligible disk exists, abort.
+   - If more than one eligible disk exists, abort (current safety gate).
+2. **Print chosen target disk** (device path + size).
+3. **Prompt for confirmation** before partitioning/formatting.
+4. **Safety checks** on the chosen target:
     - Confirm it is not currently mounted (no mounted children).
     - Confirm it meets minimum size threshold.
     - Confirm it is writable and non-removable (per current safety filters).
-3. **Wipe signatures** (recommended): `wipefs -a <disk>`.
-4. **Partition** the disk as GPT with:
+5. **Wipe signatures** (recommended): `wipefs -a <disk>`.
+6. **Partition** the disk as GPT with:
     - ESP 512 MiB
     - Root = remainder
-5. **Re-read partition table** (e.g., `partprobe` or a short udev settle, depending on available tooling).
-6. **Format**:
+7. **Re-read partition table** (e.g., `partprobe` or a short udev settle, depending on available tooling).
+8. **Format**:
     - `mkfs.vfat -F 32 <esp>`
     - `mkfs.ext4 -F <root>`
-7. **Mount**:
+9. **Mount**:
     - Root → `/mnt`
     - ESP → `/mnt/boot/efi`
-8. **Install Debian payload** by extracting into `/mnt`.
-9. **Set root password** in the target.
+10. **Install Debian payload** by extracting into `/mnt`.
+11. **Set root password** in the target.
    - Example (inside installer environment):
      - `chroot /mnt /bin/sh -lc 'echo "root:123456" | chpasswd'`
-10. **Write `/etc/fstab`** in the target using UUIDs.
-11. **Configure bootloader** in the target:
-      - `chroot /mnt bootctl install`
-      - Write loader config and entry that reference the installed kernel/initramfs and `root=UUID=<root-uuid>`.
-12. **Configure first-boot DHCP** (systemd-networkd) in the target and enable services.
-13. **Install + enable TruthDB systemd service** in the target.
+12. **Write `/etc/fstab`** in the target using UUIDs.
+13. **Configure bootloader**:
+   - Copy systemd-boot EFI binary into the ESP (including the fallback path `EFI/BOOT/BOOTX64.EFI`).
+   - Write loader config and a single entry referencing kernel/initrd on the ESP and `root=UUID=<root-uuid>`.
+   - Best-effort: create an NVRAM boot entry via `efibootmgr` (non-fatal if unsupported).
+14. **Configure first-boot DHCP** (systemd-networkd) in the target and enable services.
+15. **Install + enable TruthDB systemd service** in the target.
    - The unit file must already exist in the target (shipped in the Debian payload).
-      - Enable it so it starts automatically after boot:
-         - `chroot /mnt /bin/sh -lc 'systemctl enable truthdb.service'`
-14. **Sync + unmount** all mounts.
-15. **Reboot**.
+    - In practice, the ISO build enables the unit in the payload at build time; the installer may also enable units by creating the appropriate symlinks under `/etc/systemd/system/*`.
+16. **Sync + unmount** all mounts.
+17. **Reboot**.
 
 ## TruthDB Service (systemd)
 The installed Debian system must start TruthDB automatically on boot via systemd.
@@ -329,23 +356,17 @@ This is the concrete engineering work implied by the spec.
    - fail closed on any ambiguity (e.g., no eligible disks)
 
 ### `installer-kernel/`
-- Ensure initramfs contains the required binaries and their runtime deps:
-   - partitioning: `sfdisk` or `parted` (+ `partprobe` if used)
-   - filesystems: `mkfs.vfat`, `mkfs.ext4`
-   - mount utils: `mount`, `umount`
-   - payload: `tar` with zstd support (or `tar` + `zstd`)
-   - optional: `wipefs`
-- Confirm the initramfs does **not** start any DHCP client or otherwise bring up networking.
+This repo primarily provides the kernel artifact used in the ISO build (`BOOTX64.EFI`).
 
 ### `installer-iso/`
-- Extend the ISO build so the Debian rootfs payload artifact is embedded into the initramfs and available at runtime at a stable path (recommend: `/payload/debian-rootfs.tar.zst`).
-- Keep release build coupling between kernel + installer + payload (same version/revision).
-- Release workflow should pull the matching TruthDB version (binary + `truthdb.service` unit) from the TruthDB repo and include it in the Debian payload.
+- Build the Debian rootfs payload and embed it into initramfs at `/payload/debian-minbase-amd64-bookworm.tar.zst`.
+- Copy required external install tools into initramfs (partitioning/filesystems/mount/tar+zstd/chroot/efibootmgr/systemd-boot EFI bits).
+- Keep strict release coupling between kernel + installer + payload + truthdb artifacts (same version).
 
 ## Payload Placement
 For MVP, the payload lives **inside initramfs**.
 
-- Payload is available at a fixed path (recommend: `/payload/debian-rootfs.tar.zst`).
+- Payload is available at a fixed path: `/payload/debian-minbase-amd64-bookworm.tar.zst`.
 - The installer reads from that path and extracts to `/mnt`.
 - No need to mount the ISO filesystem at runtime.
 
